@@ -1,4 +1,328 @@
-(function e(t,n,r){function s(o,u){if(!n[o]){if(!t[o]){var a=typeof require=="function"&&require;if(!u&&a)return a(o,!0);if(i)return i(o,!0);var f=new Error("Cannot find module '"+o+"'");throw f.code="MODULE_NOT_FOUND",f}var l=n[o]={exports:{}};t[o][0].call(l.exports,function(e){var n=t[o][1][e];return s(n?n:e)},l,l.exports,e,t,n,r)}return n[o].exports}var i=typeof require=="function"&&require;for(var o=0;o<r.length;o++)s(r[o]);return s})({1:[function(require,module,exports){
+(function(){function r(e,n,t){function o(i,f){if(!n[i]){if(!e[i]){var c="function"==typeof require&&require;if(!f&&c)return c(i,!0);if(u)return u(i,!0);var a=new Error("Cannot find module '"+i+"'");throw a.code="MODULE_NOT_FOUND",a}var p=n[i]={exports:{}};e[i][0].call(p.exports,function(r){var n=e[i][1][r];return o(n||r)},p,p.exports,r,e,n,t)}return n[i].exports}for(var u="function"==typeof require&&require,i=0;i<t.length;i++)o(t[i]);return o}return r})()({1:[function(require,module,exports){
+var vast = require('./vast');
+window.vast = vast;
+},{"./vast":2}],2:[function(require,module,exports){
+var vast = require('vast-client');
+
+var videoFormats = ['application/x-mpegurl', 'video/webm', 'video/mp4'];
+
+module.exports = {
+	init: function (container, player, url) {
+		if (player.conf.wmode != 'transparent') {
+			throw new Error('The player must have wmove = transparent for video clicks to work in IE.');
+		}
+
+		if (!player.conf.playlist || !player.conf.playlist.length) {
+			throw new Error('The player must have a playlist configured.');
+		}
+
+		var that = this;
+
+		this.loadPreroll(container, url, function (preroll) {
+			if (preroll) {
+				if (preroll.swf) {
+					return player.trigger('vpaid_swf', [preroll.swf]);
+				}
+
+				if (preroll.js) {
+					return player.trigger('vpaid_js', [preroll.js]);
+				}
+
+				if (preroll.video) {
+					that.attachEvents(container, player);
+
+					var forced = false;
+
+					player.one('resume load', function (e) {
+						// forces pre-roll to play first after updating playlist
+						if (forced) {
+							return;
+						}
+
+						forced = true;
+
+						e.preventDefault();
+
+						setTimeout(function () {
+							var newPlaylist = player.conf.playlist.slice(0);
+							newPlaylist.unshift(preroll.video);
+
+							player.setPlaylist(newPlaylist);
+
+							// timeout makes play work on mobile
+							player.play(0);
+						}, 0);
+
+						return false;
+					});
+				}
+			}
+		});
+	},
+	attachEvents: function (container, player, options) {
+		options = options || {};
+
+		var skipped = false;
+		var onClick = false;
+		var completed = false;
+		var adPlayed = false;
+
+		if (options.adjustable) {
+			player.on("beforeseek", function (e) {
+				if (player.video.ad) {
+					e.preventDefault();
+				}
+			});
+		}
+
+		var disable = function () {
+			if (options.adjustable) {
+				return;
+			}
+
+			player.disable(true);
+		};
+
+		var enable = function () {
+			if (options.adjustable) {
+				return;
+			}
+
+			player.disable(false);
+		};
+
+		if (flowplayer.support.inlineVideo) {
+			var ui = container.querySelectorAll('.fp-player')[0];
+
+			var onAdClick = function (e) {
+				var isElement = e.target.className == 'fp-ui' || e.target.className == 'fp-engine';
+
+				if (!isElement || !player.video.ad || !player.playing) {
+					return;
+				}
+
+				ui.removeEventListener('click', onAdClick, true);
+
+				player.video.tracker.click();
+			};
+
+			if (ui) {
+				ui.addEventListener('click', onAdClick, true);
+			}
+		}
+
+		if (flowplayer.support.inlineVideo) {
+			player.on('pause', function () {
+				if (player.video.ad) {
+					// ipad will pause video on click and prevent user from continuing
+					enable();
+				}
+			});
+		}
+
+		player.on('unload', function () {
+			// allow user to replay video on mobile if they exit out ad early
+			enable();
+		});
+
+		player.on('progress', function (event, player, duration) {
+			if (!player.video.ad || !player.playing) {
+				return;
+			}
+
+			adPlayed = true;
+
+			disable();
+
+			player.video.tracker.setProgress(duration);
+
+			var title = container.querySelectorAll('.fp-title')[0];
+			var header = container.querySelectorAll('.fp-header')[0];
+
+			if (title) {
+				if (!onClick) {
+					onClick = true;
+
+					var onSkipClick = function () {
+						if (player.video.skip && player.video.time >= player.video.skip) {
+							skipped = true;
+
+							player.video.tracker.skip();
+
+							player.play(1);
+						}
+					};
+
+					title.onclick = onSkipClick;
+
+					if (header) {
+						// header can overlap title, so need to register in both places
+						header.onclick = onSkipClick;
+					}
+				}
+
+				if (player.video.skip) {
+					if (player.video.skip && duration >= player.video.skip) {
+						title.innerHTML = "Advertisement: <strong>Skip Ad &raquo;</strong>";
+					} else {
+						title.innerHTML = "Advertisement: Skippable in " + Math.round(player.video.skip - duration) + " seconds...";
+					}
+				} else {
+					title.innerHTML = "Advertisement: Ends in " + Math.round(player.video.duration - duration) + " seconds...";
+				}
+			}
+		});
+
+		player.on('finish.vast_complete', function () {
+			if (!player.video.ad) {
+				return;
+			}
+
+			player.off('finish.vast_complete');
+
+			if (!skipped) {
+				player.video.tracker.complete();
+			}
+		});
+
+		player.on('ready', function () {
+			if (player.video.ad) {
+				return player.video.tracker.load();
+			}
+
+			enable();
+
+			if (!completed && adPlayed) {
+				completed = true;
+
+				if (options.keepPreroll !== true) {
+					// take pre-roll out of rotation once user has seen it
+					player.removePlaylistItem(0);
+				}
+			}
+		});
+	},
+	loadPreroll: function (container, url, callback, timeoutMs) {
+		var timedOut = false;
+
+		var timeout = setTimeout(function () {
+			timedOut = true;
+
+			callback();
+		}, timeoutMs || 5000);
+
+		vast.client.get(url, function (response) {
+			if (timedOut) {
+				return;
+			}
+
+			var ads = [];
+
+			clearTimeout(timeout);
+
+			if (response) {
+				response.ads.forEach(function (ad) {
+					ad.creatives.some(function (creative) {
+						if (creative.type != 'linear') {
+							return;
+						}
+
+						var tracker = new vast.tracker(ad, creative);
+
+						var clip = {
+							tracker: tracker,
+							skip: creative.skipDelay,
+							title: 'Advertisement',
+							ad: true,
+							sources: []
+						};
+
+						clip.tracker.on('clickthrough', function (url) {
+							window.open(url);
+						});
+
+						var typeMap = {};
+						var smallest = {};
+
+						creative.mediaFiles.forEach(function (media) {
+							if (media.mimeType == 'application/javascript') {
+								return;
+							}
+
+							if (media.mimeType == 'application/x-shockwave-flash') {
+								return ads.push({
+									swf: {
+										src: media.fileURL,
+										width: media.width,
+										height: media.height,
+										parameters: creative.adParameters,
+										tracker: tracker
+									}
+								});
+							}
+
+							if (videoFormats.indexOf(media.mimeType) > -1) {
+								var vid = {
+									width: media.width,
+									height: media.height,
+									seconds: creative.duration,
+									src: media.fileURL
+								};
+
+								if (!smallest[media.mimeType] || smallest[media.mimeType].width > media.width) {
+									smallest[media.mimeType] = vid;
+								}
+
+								if (container.offsetWidth >= media.width && (!typeMap[media.mimeType] || media.width > typeMap[media.mimeType].width)) {
+									typeMap[media.mimeType] = vid;
+								}
+							}
+						});
+
+						videoFormats.forEach(function (format) {
+							var vid = typeMap[format] || smallest[format];
+
+							if (vid) {
+								clip.sources.push({
+									type: format,
+									seconds: vid.seconds,
+									width: vid.width,
+									height: vid.height,
+									src: vid.src
+								});
+							}
+						});
+
+						if (clip.sources.length > 0) {
+							ads.push({
+								clip: clip
+							});
+						}
+
+						return true;
+					});
+				});
+			}
+
+			if (ads[0]) {
+				if (ads[0].swf) {
+					return callback({type: 'swf', swf: ads[0].swf});
+				}
+
+				if (ads[0].js) {
+					return callback({type: 'js', js: ads[0].js});
+				}
+
+				if (ads[0].clip) {
+					return callback({type: 'video', video: ads[0].clip});
+				}
+			}
+
+			callback(null);
+		});
+	}
+};
+},{"vast-client":8}],3:[function(require,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -20,8 +344,16 @@
 // OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
 // USE OR OTHER DEALINGS IN THE SOFTWARE.
 
+var objectCreate = Object.create || objectCreatePolyfill
+var objectKeys = Object.keys || objectKeysPolyfill
+var bind = Function.prototype.bind || functionBindPolyfill
+
 function EventEmitter() {
-  this._events = this._events || {};
+  if (!this._events || !Object.prototype.hasOwnProperty.call(this, '_events')) {
+    this._events = objectCreate(null);
+    this._eventsCount = 0;
+  }
+
   this._maxListeners = this._maxListeners || undefined;
 }
 module.exports = EventEmitter;
@@ -34,271 +366,488 @@ EventEmitter.prototype._maxListeners = undefined;
 
 // By default EventEmitters will print a warning if more than 10 listeners are
 // added to it. This is a useful default which helps finding memory leaks.
-EventEmitter.defaultMaxListeners = 10;
+var defaultMaxListeners = 10;
+
+var hasDefineProperty;
+try {
+  var o = {};
+  if (Object.defineProperty) Object.defineProperty(o, 'x', { value: 0 });
+  hasDefineProperty = o.x === 0;
+} catch (err) { hasDefineProperty = false }
+if (hasDefineProperty) {
+  Object.defineProperty(EventEmitter, 'defaultMaxListeners', {
+    enumerable: true,
+    get: function() {
+      return defaultMaxListeners;
+    },
+    set: function(arg) {
+      // check whether the input is a positive number (whose value is zero or
+      // greater and not a NaN).
+      if (typeof arg !== 'number' || arg < 0 || arg !== arg)
+        throw new TypeError('"defaultMaxListeners" must be a positive number');
+      defaultMaxListeners = arg;
+    }
+  });
+} else {
+  EventEmitter.defaultMaxListeners = defaultMaxListeners;
+}
 
 // Obviously not all Emitters should be limited to 10. This function allows
 // that to be increased. Set to zero for unlimited.
-EventEmitter.prototype.setMaxListeners = function(n) {
-  if (!isNumber(n) || n < 0 || isNaN(n))
-    throw TypeError('n must be a positive number');
+EventEmitter.prototype.setMaxListeners = function setMaxListeners(n) {
+  if (typeof n !== 'number' || n < 0 || isNaN(n))
+    throw new TypeError('"n" argument must be a positive number');
   this._maxListeners = n;
   return this;
 };
 
-EventEmitter.prototype.emit = function(type) {
-  var er, handler, len, args, i, listeners;
+function $getMaxListeners(that) {
+  if (that._maxListeners === undefined)
+    return EventEmitter.defaultMaxListeners;
+  return that._maxListeners;
+}
 
-  if (!this._events)
-    this._events = {};
+EventEmitter.prototype.getMaxListeners = function getMaxListeners() {
+  return $getMaxListeners(this);
+};
 
-  // If there is no 'error' event listener then throw.
-  if (type === 'error') {
-    if (!this._events.error ||
-        (isObject(this._events.error) && !this._events.error.length)) {
-      er = arguments[1];
-      if (er instanceof Error) {
-        throw er; // Unhandled 'error' event
-      }
-      throw TypeError('Uncaught, unspecified "error" event.');
-    }
+// These standalone emit* functions are used to optimize calling of event
+// handlers for fast cases because emit() itself often has a variable number of
+// arguments and can be deoptimized because of that. These functions always have
+// the same number of arguments and thus do not get deoptimized, so the code
+// inside them can execute faster.
+function emitNone(handler, isFn, self) {
+  if (isFn)
+    handler.call(self);
+  else {
+    var len = handler.length;
+    var listeners = arrayClone(handler, len);
+    for (var i = 0; i < len; ++i)
+      listeners[i].call(self);
   }
+}
+function emitOne(handler, isFn, self, arg1) {
+  if (isFn)
+    handler.call(self, arg1);
+  else {
+    var len = handler.length;
+    var listeners = arrayClone(handler, len);
+    for (var i = 0; i < len; ++i)
+      listeners[i].call(self, arg1);
+  }
+}
+function emitTwo(handler, isFn, self, arg1, arg2) {
+  if (isFn)
+    handler.call(self, arg1, arg2);
+  else {
+    var len = handler.length;
+    var listeners = arrayClone(handler, len);
+    for (var i = 0; i < len; ++i)
+      listeners[i].call(self, arg1, arg2);
+  }
+}
+function emitThree(handler, isFn, self, arg1, arg2, arg3) {
+  if (isFn)
+    handler.call(self, arg1, arg2, arg3);
+  else {
+    var len = handler.length;
+    var listeners = arrayClone(handler, len);
+    for (var i = 0; i < len; ++i)
+      listeners[i].call(self, arg1, arg2, arg3);
+  }
+}
 
-  handler = this._events[type];
+function emitMany(handler, isFn, self, args) {
+  if (isFn)
+    handler.apply(self, args);
+  else {
+    var len = handler.length;
+    var listeners = arrayClone(handler, len);
+    for (var i = 0; i < len; ++i)
+      listeners[i].apply(self, args);
+  }
+}
 
-  if (isUndefined(handler))
+EventEmitter.prototype.emit = function emit(type) {
+  var er, handler, len, args, i, events;
+  var doError = (type === 'error');
+
+  events = this._events;
+  if (events)
+    doError = (doError && events.error == null);
+  else if (!doError)
     return false;
 
-  if (isFunction(handler)) {
-    switch (arguments.length) {
-      // fast cases
-      case 1:
-        handler.call(this);
-        break;
-      case 2:
-        handler.call(this, arguments[1]);
-        break;
-      case 3:
-        handler.call(this, arguments[1], arguments[2]);
-        break;
-      // slower
-      default:
-        args = Array.prototype.slice.call(arguments, 1);
-        handler.apply(this, args);
+  // If there is no 'error' event listener then throw.
+  if (doError) {
+    if (arguments.length > 1)
+      er = arguments[1];
+    if (er instanceof Error) {
+      throw er; // Unhandled 'error' event
+    } else {
+      // At least give some kind of context to the user
+      var err = new Error('Unhandled "error" event. (' + er + ')');
+      err.context = er;
+      throw err;
     }
-  } else if (isObject(handler)) {
-    args = Array.prototype.slice.call(arguments, 1);
-    listeners = handler.slice();
-    len = listeners.length;
-    for (i = 0; i < len; i++)
-      listeners[i].apply(this, args);
+    return false;
+  }
+
+  handler = events[type];
+
+  if (!handler)
+    return false;
+
+  var isFn = typeof handler === 'function';
+  len = arguments.length;
+  switch (len) {
+      // fast cases
+    case 1:
+      emitNone(handler, isFn, this);
+      break;
+    case 2:
+      emitOne(handler, isFn, this, arguments[1]);
+      break;
+    case 3:
+      emitTwo(handler, isFn, this, arguments[1], arguments[2]);
+      break;
+    case 4:
+      emitThree(handler, isFn, this, arguments[1], arguments[2], arguments[3]);
+      break;
+      // slower
+    default:
+      args = new Array(len - 1);
+      for (i = 1; i < len; i++)
+        args[i - 1] = arguments[i];
+      emitMany(handler, isFn, this, args);
   }
 
   return true;
 };
 
-EventEmitter.prototype.addListener = function(type, listener) {
+function _addListener(target, type, listener, prepend) {
   var m;
+  var events;
+  var existing;
 
-  if (!isFunction(listener))
-    throw TypeError('listener must be a function');
+  if (typeof listener !== 'function')
+    throw new TypeError('"listener" argument must be a function');
 
-  if (!this._events)
-    this._events = {};
+  events = target._events;
+  if (!events) {
+    events = target._events = objectCreate(null);
+    target._eventsCount = 0;
+  } else {
+    // To avoid recursion in the case that type === "newListener"! Before
+    // adding it to the listeners, first emit "newListener".
+    if (events.newListener) {
+      target.emit('newListener', type,
+          listener.listener ? listener.listener : listener);
 
-  // To avoid recursion in the case that type === "newListener"! Before
-  // adding it to the listeners, first emit "newListener".
-  if (this._events.newListener)
-    this.emit('newListener', type,
-              isFunction(listener.listener) ?
-              listener.listener : listener);
+      // Re-assign `events` because a newListener handler could have caused the
+      // this._events to be assigned to a new object
+      events = target._events;
+    }
+    existing = events[type];
+  }
 
-  if (!this._events[type])
+  if (!existing) {
     // Optimize the case of one listener. Don't need the extra array object.
-    this._events[type] = listener;
-  else if (isObject(this._events[type]))
-    // If we've already got an array, just append.
-    this._events[type].push(listener);
-  else
-    // Adding the second element, need to change to array.
-    this._events[type] = [this._events[type], listener];
-
-  // Check for listener leak
-  if (isObject(this._events[type]) && !this._events[type].warned) {
-    if (!isUndefined(this._maxListeners)) {
-      m = this._maxListeners;
+    existing = events[type] = listener;
+    ++target._eventsCount;
+  } else {
+    if (typeof existing === 'function') {
+      // Adding the second element, need to change to array.
+      existing = events[type] =
+          prepend ? [listener, existing] : [existing, listener];
     } else {
-      m = EventEmitter.defaultMaxListeners;
+      // If we've already got an array, just append.
+      if (prepend) {
+        existing.unshift(listener);
+      } else {
+        existing.push(listener);
+      }
     }
 
-    if (m && m > 0 && this._events[type].length > m) {
-      this._events[type].warned = true;
-      console.error('(node) warning: possible EventEmitter memory ' +
-                    'leak detected. %d listeners added. ' +
-                    'Use emitter.setMaxListeners() to increase limit.',
-                    this._events[type].length);
-      if (typeof console.trace === 'function') {
-        // not supported in IE 10
-        console.trace();
+    // Check for listener leak
+    if (!existing.warned) {
+      m = $getMaxListeners(target);
+      if (m && m > 0 && existing.length > m) {
+        existing.warned = true;
+        var w = new Error('Possible EventEmitter memory leak detected. ' +
+            existing.length + ' "' + String(type) + '" listeners ' +
+            'added. Use emitter.setMaxListeners() to ' +
+            'increase limit.');
+        w.name = 'MaxListenersExceededWarning';
+        w.emitter = target;
+        w.type = type;
+        w.count = existing.length;
+        if (typeof console === 'object' && console.warn) {
+          console.warn('%s: %s', w.name, w.message);
+        }
       }
     }
   }
 
-  return this;
+  return target;
+}
+
+EventEmitter.prototype.addListener = function addListener(type, listener) {
+  return _addListener(this, type, listener, false);
 };
 
 EventEmitter.prototype.on = EventEmitter.prototype.addListener;
 
-EventEmitter.prototype.once = function(type, listener) {
-  if (!isFunction(listener))
-    throw TypeError('listener must be a function');
+EventEmitter.prototype.prependListener =
+    function prependListener(type, listener) {
+      return _addListener(this, type, listener, true);
+    };
 
-  var fired = false;
-
-  function g() {
-    this.removeListener(type, g);
-
-    if (!fired) {
-      fired = true;
-      listener.apply(this, arguments);
+function onceWrapper() {
+  if (!this.fired) {
+    this.target.removeListener(this.type, this.wrapFn);
+    this.fired = true;
+    switch (arguments.length) {
+      case 0:
+        return this.listener.call(this.target);
+      case 1:
+        return this.listener.call(this.target, arguments[0]);
+      case 2:
+        return this.listener.call(this.target, arguments[0], arguments[1]);
+      case 3:
+        return this.listener.call(this.target, arguments[0], arguments[1],
+            arguments[2]);
+      default:
+        var args = new Array(arguments.length);
+        for (var i = 0; i < args.length; ++i)
+          args[i] = arguments[i];
+        this.listener.apply(this.target, args);
     }
   }
+}
 
-  g.listener = listener;
-  this.on(type, g);
+function _onceWrap(target, type, listener) {
+  var state = { fired: false, wrapFn: undefined, target: target, type: type, listener: listener };
+  var wrapped = bind.call(onceWrapper, state);
+  wrapped.listener = listener;
+  state.wrapFn = wrapped;
+  return wrapped;
+}
 
+EventEmitter.prototype.once = function once(type, listener) {
+  if (typeof listener !== 'function')
+    throw new TypeError('"listener" argument must be a function');
+  this.on(type, _onceWrap(this, type, listener));
   return this;
 };
 
-// emits a 'removeListener' event iff the listener was removed
-EventEmitter.prototype.removeListener = function(type, listener) {
-  var list, position, length, i;
-
-  if (!isFunction(listener))
-    throw TypeError('listener must be a function');
-
-  if (!this._events || !this._events[type])
-    return this;
-
-  list = this._events[type];
-  length = list.length;
-  position = -1;
-
-  if (list === listener ||
-      (isFunction(list.listener) && list.listener === listener)) {
-    delete this._events[type];
-    if (this._events.removeListener)
-      this.emit('removeListener', type, listener);
-
-  } else if (isObject(list)) {
-    for (i = length; i-- > 0;) {
-      if (list[i] === listener ||
-          (list[i].listener && list[i].listener === listener)) {
-        position = i;
-        break;
-      }
-    }
-
-    if (position < 0)
+EventEmitter.prototype.prependOnceListener =
+    function prependOnceListener(type, listener) {
+      if (typeof listener !== 'function')
+        throw new TypeError('"listener" argument must be a function');
+      this.prependListener(type, _onceWrap(this, type, listener));
       return this;
+    };
 
-    if (list.length === 1) {
-      list.length = 0;
-      delete this._events[type];
-    } else {
-      list.splice(position, 1);
-    }
+// Emits a 'removeListener' event if and only if the listener was removed.
+EventEmitter.prototype.removeListener =
+    function removeListener(type, listener) {
+      var list, events, position, i, originalListener;
 
-    if (this._events.removeListener)
-      this.emit('removeListener', type, listener);
-  }
+      if (typeof listener !== 'function')
+        throw new TypeError('"listener" argument must be a function');
 
-  return this;
+      events = this._events;
+      if (!events)
+        return this;
+
+      list = events[type];
+      if (!list)
+        return this;
+
+      if (list === listener || list.listener === listener) {
+        if (--this._eventsCount === 0)
+          this._events = objectCreate(null);
+        else {
+          delete events[type];
+          if (events.removeListener)
+            this.emit('removeListener', type, list.listener || listener);
+        }
+      } else if (typeof list !== 'function') {
+        position = -1;
+
+        for (i = list.length - 1; i >= 0; i--) {
+          if (list[i] === listener || list[i].listener === listener) {
+            originalListener = list[i].listener;
+            position = i;
+            break;
+          }
+        }
+
+        if (position < 0)
+          return this;
+
+        if (position === 0)
+          list.shift();
+        else
+          spliceOne(list, position);
+
+        if (list.length === 1)
+          events[type] = list[0];
+
+        if (events.removeListener)
+          this.emit('removeListener', type, originalListener || listener);
+      }
+
+      return this;
+    };
+
+EventEmitter.prototype.removeAllListeners =
+    function removeAllListeners(type) {
+      var listeners, events, i;
+
+      events = this._events;
+      if (!events)
+        return this;
+
+      // not listening for removeListener, no need to emit
+      if (!events.removeListener) {
+        if (arguments.length === 0) {
+          this._events = objectCreate(null);
+          this._eventsCount = 0;
+        } else if (events[type]) {
+          if (--this._eventsCount === 0)
+            this._events = objectCreate(null);
+          else
+            delete events[type];
+        }
+        return this;
+      }
+
+      // emit removeListener for all listeners on all events
+      if (arguments.length === 0) {
+        var keys = objectKeys(events);
+        var key;
+        for (i = 0; i < keys.length; ++i) {
+          key = keys[i];
+          if (key === 'removeListener') continue;
+          this.removeAllListeners(key);
+        }
+        this.removeAllListeners('removeListener');
+        this._events = objectCreate(null);
+        this._eventsCount = 0;
+        return this;
+      }
+
+      listeners = events[type];
+
+      if (typeof listeners === 'function') {
+        this.removeListener(type, listeners);
+      } else if (listeners) {
+        // LIFO order
+        for (i = listeners.length - 1; i >= 0; i--) {
+          this.removeListener(type, listeners[i]);
+        }
+      }
+
+      return this;
+    };
+
+function _listeners(target, type, unwrap) {
+  var events = target._events;
+
+  if (!events)
+    return [];
+
+  var evlistener = events[type];
+  if (!evlistener)
+    return [];
+
+  if (typeof evlistener === 'function')
+    return unwrap ? [evlistener.listener || evlistener] : [evlistener];
+
+  return unwrap ? unwrapListeners(evlistener) : arrayClone(evlistener, evlistener.length);
+}
+
+EventEmitter.prototype.listeners = function listeners(type) {
+  return _listeners(this, type, true);
 };
 
-EventEmitter.prototype.removeAllListeners = function(type) {
-  var key, listeners;
-
-  if (!this._events)
-    return this;
-
-  // not listening for removeListener, no need to emit
-  if (!this._events.removeListener) {
-    if (arguments.length === 0)
-      this._events = {};
-    else if (this._events[type])
-      delete this._events[type];
-    return this;
-  }
-
-  // emit removeListener for all listeners on all events
-  if (arguments.length === 0) {
-    for (key in this._events) {
-      if (key === 'removeListener') continue;
-      this.removeAllListeners(key);
-    }
-    this.removeAllListeners('removeListener');
-    this._events = {};
-    return this;
-  }
-
-  listeners = this._events[type];
-
-  if (isFunction(listeners)) {
-    this.removeListener(type, listeners);
-  } else if (listeners) {
-    // LIFO order
-    while (listeners.length)
-      this.removeListener(type, listeners[listeners.length - 1]);
-  }
-  delete this._events[type];
-
-  return this;
-};
-
-EventEmitter.prototype.listeners = function(type) {
-  var ret;
-  if (!this._events || !this._events[type])
-    ret = [];
-  else if (isFunction(this._events[type]))
-    ret = [this._events[type]];
-  else
-    ret = this._events[type].slice();
-  return ret;
-};
-
-EventEmitter.prototype.listenerCount = function(type) {
-  if (this._events) {
-    var evlistener = this._events[type];
-
-    if (isFunction(evlistener))
-      return 1;
-    else if (evlistener)
-      return evlistener.length;
-  }
-  return 0;
+EventEmitter.prototype.rawListeners = function rawListeners(type) {
+  return _listeners(this, type, false);
 };
 
 EventEmitter.listenerCount = function(emitter, type) {
-  return emitter.listenerCount(type);
+  if (typeof emitter.listenerCount === 'function') {
+    return emitter.listenerCount(type);
+  } else {
+    return listenerCount.call(emitter, type);
+  }
 };
 
-function isFunction(arg) {
-  return typeof arg === 'function';
+EventEmitter.prototype.listenerCount = listenerCount;
+function listenerCount(type) {
+  var events = this._events;
+
+  if (events) {
+    var evlistener = events[type];
+
+    if (typeof evlistener === 'function') {
+      return 1;
+    } else if (evlistener) {
+      return evlistener.length;
+    }
+  }
+
+  return 0;
 }
 
-function isNumber(arg) {
-  return typeof arg === 'number';
+EventEmitter.prototype.eventNames = function eventNames() {
+  return this._eventsCount > 0 ? Reflect.ownKeys(this._events) : [];
+};
+
+// About 1.5x faster than the two-arg version of Array#splice().
+function spliceOne(list, index) {
+  for (var i = index, k = i + 1, n = list.length; k < n; i += 1, k += 1)
+    list[i] = list[k];
+  list.pop();
 }
 
-function isObject(arg) {
-  return typeof arg === 'object' && arg !== null;
+function arrayClone(arr, n) {
+  var copy = new Array(n);
+  for (var i = 0; i < n; ++i)
+    copy[i] = arr[i];
+  return copy;
 }
 
-function isUndefined(arg) {
-  return arg === void 0;
+function unwrapListeners(arr) {
+  var ret = new Array(arr.length);
+  for (var i = 0; i < ret.length; ++i) {
+    ret[i] = arr[i].listener || arr[i];
+  }
+  return ret;
 }
 
-},{}],2:[function(require,module,exports){
+function objectCreatePolyfill(proto) {
+  var F = function() {};
+  F.prototype = proto;
+  return new F;
+}
+function objectKeysPolyfill(obj) {
+  var keys = [];
+  for (var k in obj) if (Object.prototype.hasOwnProperty.call(obj, k)) {
+    keys.push(k);
+  }
+  return k;
+}
+function functionBindPolyfill(context) {
+  var fn = this;
+  return function () {
+    return fn.apply(context, arguments);
+  };
+}
+
+},{}],4:[function(require,module,exports){
 // Generated by CoffeeScript 1.7.1
 (function() {
   var VASTAd;
@@ -319,7 +868,7 @@ function isUndefined(arg) {
 
 }).call(this);
 
-},{}],3:[function(require,module,exports){
+},{}],5:[function(require,module,exports){
 // Generated by CoffeeScript 1.7.1
 (function() {
   var VASTClient, VASTParser, VASTUtil;
@@ -411,7 +960,7 @@ function isUndefined(arg) {
 
 }).call(this);
 
-},{"./parser":8,"./util":14}],4:[function(require,module,exports){
+},{"./parser":10,"./util":16}],6:[function(require,module,exports){
 // Generated by CoffeeScript 1.7.1
 (function() {
   var VASTCompanionAd;
@@ -437,7 +986,7 @@ function isUndefined(arg) {
 
 }).call(this);
 
-},{}],5:[function(require,module,exports){
+},{}],7:[function(require,module,exports){
 // Generated by CoffeeScript 1.7.1
 (function() {
   var VASTCreative, VASTCreativeCompanion, VASTCreativeLinear, VASTCreativeNonLinear,
@@ -504,7 +1053,7 @@ function isUndefined(arg) {
 
 }).call(this);
 
-},{}],6:[function(require,module,exports){
+},{}],8:[function(require,module,exports){
 // Generated by CoffeeScript 1.7.1
 (function() {
   module.exports = {
@@ -516,7 +1065,7 @@ function isUndefined(arg) {
 
 }).call(this);
 
-},{"./client":3,"./parser":8,"./tracker":10,"./util":14}],7:[function(require,module,exports){
+},{"./client":5,"./parser":10,"./tracker":12,"./util":16}],9:[function(require,module,exports){
 // Generated by CoffeeScript 1.7.1
 (function() {
   var VASTMediaFile;
@@ -546,7 +1095,7 @@ function isUndefined(arg) {
 
 }).call(this);
 
-},{}],8:[function(require,module,exports){
+},{}],10:[function(require,module,exports){
 // Generated by CoffeeScript 1.7.1
 (function() {
   var EventEmitter, URLHandler, VASTAd, VASTCompanionAd, VASTCreativeCompanion, VASTCreativeLinear, VASTMediaFile, VASTParser, VASTResponse, VASTUtil,
@@ -1077,7 +1626,7 @@ function isUndefined(arg) {
 
 }).call(this);
 
-},{"./ad":2,"./companionad":4,"./creative":5,"./mediafile":7,"./response":9,"./urlhandler":11,"./util":14,"events":1}],9:[function(require,module,exports){
+},{"./ad":4,"./companionad":6,"./creative":7,"./mediafile":9,"./response":11,"./urlhandler":13,"./util":16,"events":3}],11:[function(require,module,exports){
 // Generated by CoffeeScript 1.7.1
 (function() {
   var VASTResponse;
@@ -1096,7 +1645,7 @@ function isUndefined(arg) {
 
 }).call(this);
 
-},{}],10:[function(require,module,exports){
+},{}],12:[function(require,module,exports){
 // Generated by CoffeeScript 1.7.1
 (function() {
   var EventEmitter, VASTClient, VASTCreativeLinear, VASTTracker, VASTUtil,
@@ -1323,7 +1872,7 @@ function isUndefined(arg) {
 
 }).call(this);
 
-},{"./client":3,"./creative":5,"./util":14,"events":1}],11:[function(require,module,exports){
+},{"./client":5,"./creative":7,"./util":16,"events":3}],13:[function(require,module,exports){
 // Generated by CoffeeScript 1.7.1
 (function() {
   var URLHandler, flash, xhr;
@@ -1363,7 +1912,7 @@ function isUndefined(arg) {
 
 }).call(this);
 
-},{"./urlhandlers/flash":12,"./urlhandlers/xmlhttprequest":13}],12:[function(require,module,exports){
+},{"./urlhandlers/flash":14,"./urlhandlers/xmlhttprequest":15}],14:[function(require,module,exports){
 // Generated by CoffeeScript 1.7.1
 (function() {
   var FlashURLHandler;
@@ -1410,7 +1959,7 @@ function isUndefined(arg) {
 
 }).call(this);
 
-},{}],13:[function(require,module,exports){
+},{}],15:[function(require,module,exports){
 // Generated by CoffeeScript 1.7.1
 (function() {
   var XHRURLHandler;
@@ -1459,7 +2008,7 @@ function isUndefined(arg) {
 
 }).call(this);
 
-},{}],14:[function(require,module,exports){
+},{}],16:[function(require,module,exports){
 // Generated by CoffeeScript 1.7.1
 (function() {
   var VASTUtil;
@@ -1565,6 +2114,4 @@ function isUndefined(arg) {
 
 }).call(this);
 
-},{}],15:[function(require,module,exports){
-var vast=require("vast-client"),videoFormats=["application/x-mpegurl","video/webm","video/mp4"];module.exports={init:function(e,i,t){if("transparent"!=i.conf.wmode)throw new Error("The player must have wmove = transparent for video clicks to work in IE.");if(!i.conf.playlist||!i.conf.playlist.length)throw new Error("The player must have a playlist configured.");var r=this;this.loadPreroll(e,t,function(t){if(t){if(t.swf)return i.trigger("vpaid_swf",[t.swf]);if(t.js)return i.trigger("vpaid_js",[t.js]);if(t.video){r.attachEvents(e,i);var o=!1;i.one("resume load",function(e){return o?void 0:(o=!0,e.preventDefault(),setTimeout(function(){var e=i.conf.playlist.slice(0);e.unshift(t.video),i.setPlaylist(e),i.play(0)},0),!1)})}}})},attachEvents:function(e,i,t){t=t||{};var r=!1,o=!1,n=!1,a=!1;t.adjustable&&i.on("beforeseek",function(e){i.video.ad&&e.preventDefault()});var s=function(){t.adjustable||i.disable(!0)},d=function(){t.adjustable||i.disable(!1)};if(flowplayer.support.inlineVideo){var c=e.querySelectorAll(".fp-player")[0],l=function(e){var t="fp-ui"==e.target.className||"fp-engine"==e.target.className;t&&i.video.ad&&i.playing&&(c.removeEventListener("click",l,!0),i.video.tracker.click())};c&&c.addEventListener("click",l,!0)}flowplayer.support.inlineVideo&&i.on("pause",function(){i.video.ad&&d()}),i.on("unload",function(){d()}),i.on("progress",function(i,t,n){if(t.video.ad&&t.playing){a=!0,s(),t.video.tracker.setProgress(n);var d=e.querySelectorAll(".fp-title")[0],c=e.querySelectorAll(".fp-header")[0];if(d){if(!o){o=!0;var l=function(){t.video.skip&&t.video.time>=t.video.skip&&(r=!0,t.video.tracker.skip(),t.play(1))};d.onclick=l,c&&(c.onclick=l)}t.video.skip?t.video.skip&&n>=t.video.skip?d.innerHTML="Advertisement: <strong>Skip Ad &raquo;</strong>":d.innerHTML="Advertisement: Skippable in "+Math.round(t.video.skip-n)+" seconds...":d.innerHTML="Advertisement: Ends in "+Math.round(t.video.duration-n)+" seconds..."}}}),i.on("finish.vast_complete",function(){i.video.ad&&(i.off("finish.vast_complete"),r||i.video.tracker.complete())}),i.on("ready",function(){return i.video.ad?i.video.tracker.load():(d(),void(!n&&a&&(n=!0,t.keepPreroll!==!0&&i.removePlaylistItem(0))))})},loadPreroll:function(e,i,t,r){var o=!1,n=setTimeout(function(){o=!0,t()},r||5e3);vast.client.get(i,function(i){if(!o){var r=[];if(clearTimeout(n),i&&i.ads.forEach(function(i){i.creatives.some(function(t){if("linear"==t.type){var o=new vast.tracker(i,t),n={tracker:o,skip:t.skipDelay,title:"Advertisement",ad:!0,sources:[]};n.tracker.on("clickthrough",function(e){window.open(e)});var a={},s={};return t.mediaFiles.forEach(function(i){if("application/javascript"==i.mimeType)return r.push({js:{width:i.width,height:i.height,src:i.fileURL,parameters:t.adParameters,tracker:o}});if("application/x-shockwave-flash"==i.mimeType)return r.push({swf:{src:i.fileURL,width:i.width,height:i.height,parameters:t.adParameters,tracker:o}});if(videoFormats.indexOf(i.mimeType)>-1){var n={width:i.width,height:i.height,seconds:t.duration,src:i.fileURL};(!s[i.mimeType]||s[i.mimeType].width>i.width)&&(s[i.mimeType]=n),e.offsetWidth>=i.width&&(!a[i.mimeType]||i.width>a[i.mimeType].width)&&(a[i.mimeType]=n)}}),videoFormats.forEach(function(e){var i=a[e]||s[e];i&&n.sources.push({type:e,seconds:i.seconds,width:i.width,height:i.height,src:i.src})}),n.sources.length>0&&r.push({clip:n}),!0}})}),r[0]){if(r[0].swf)return t({type:"swf",swf:r[0].swf});if(r[0].js)return t({type:"js",js:r[0].js});if(r[0].clip)return t({type:"video",video:r[0].clip})}t(null)}})}};
-},{"vast-client":6}]},{},[15]);
+},{}]},{},[1]);

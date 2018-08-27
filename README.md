@@ -72,6 +72,18 @@ player.on('vpaid_js', function (e, config) {
 });
 ```
 
+## Building
+
+install npm for your platform
+
+```
+# npm install browserify
+# npm install vast-client
+# ../node_modules/.bin/browserify src/vast.js > dist/vast.js
+
+```
+
+
 ## Changelog
 
 * 1.1.10: Fix for skipping in Flowplayer 7

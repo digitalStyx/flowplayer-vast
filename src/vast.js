@@ -242,15 +242,7 @@ module.exports = {
 
 						creative.mediaFiles.forEach(function (media) {
 							if (media.mimeType == 'application/javascript') {
-								return ads.push({
-									js: {
-										width: media.width,
-										height: media.height,
-										src: media.fileURL,
-										parameters: creative.adParameters,
-										tracker: tracker
-									}
-								});
+								return;
 							}
 
 							if (media.mimeType == 'application/x-shockwave-flash') {
