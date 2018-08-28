@@ -41,6 +41,10 @@ module.exports = {
 
 						forced = true;
 
+						if (undefined !== window.player.engine && undefined !== window.player.engine.hls) {
+							window.player.engine.hls.stopLoad();
+						}
+
 						e.preventDefault();
 
 						setTimeout(function () {
