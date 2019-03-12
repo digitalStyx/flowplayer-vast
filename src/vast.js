@@ -258,7 +258,7 @@ module.exports = {
 								});
 							}
 
-							if (videoFormats.indexOf(media.mimeType) > -1) {
+							if (videoFormats.indexOf(media.mimeType) > -1 && typeof(media.fileURL) === "string" && media.fileURL != "") {
 								var vid = {
 									width: media.width,
 									height: media.height,

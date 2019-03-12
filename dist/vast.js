@@ -31,34 +31,22 @@ module.exports = {
 				if (preroll.video) {
 					that.attachEvents(container, player);
 
-					var forced = false;
 
-					player.one('resume load', function (e) {
-						// forces pre-roll to play first after updating playlist
-						if (forced) {
-							return;
-						}
+					if (undefined !== window.fplayer.engine && undefined !== window.fplayer.engine.hls) {
+						window.fplayer.engine.hls.stopLoad();
+					}
 
-						forced = true;
+					setTimeout(function () {
+						var newPlaylist = player.conf.playlist.slice(0);
+						newPlaylist.unshift(preroll.video);
 
-						if (undefined !== window.player.engine && undefined !== window.player.engine.hls) {
-							window.player.engine.hls.stopLoad();
-						}
+						player.setPlaylist(newPlaylist);
 
-						e.preventDefault();
+						// timeout makes play work on mobile
+						player.play(0);
+					}, 0);
 
-						setTimeout(function () {
-							var newPlaylist = player.conf.playlist.slice(0);
-							newPlaylist.unshift(preroll.video);
-
-							player.setPlaylist(newPlaylist);
-
-							// timeout makes play work on mobile
-							player.play(0);
-						}, 0);
-
-						return false;
-					});
+					return false;
 				}
 			}
 		});
@@ -167,12 +155,12 @@ module.exports = {
 
 				if (player.video.skip) {
 					if (player.video.skip && duration >= player.video.skip) {
-						title.innerHTML = "Advertisement: <strong>Skip Ad &raquo;</strong>";
+						title.innerHTML = "Reklama: <strong>Pomiń &raquo;</strong>";
 					} else {
-						title.innerHTML = "Advertisement: Skippable in " + Math.round(player.video.skip - duration) + " seconds...";
+						title.innerHTML = "Reklama: Skippable in " + Math.round(player.video.skip - duration) + " seconds...";
 					}
 				} else {
-					title.innerHTML = "Advertisement: Ends in " + Math.round(player.video.duration - duration) + " seconds...";
+					title.innerHTML = "Reklama: Skończy się za " + Math.round(player.video.duration - duration) + " sekund...";
 				}
 			}
 		});
@@ -215,7 +203,8 @@ module.exports = {
 			callback();
 		}, timeoutMs || 5000);
 
-		vast.client.get(url, function (response) {
+		var opt=[];opt.withCredentials=true;
+		vast.client.get(url, opt, function (response) {
 			if (timedOut) {
 				return;
 			}
@@ -249,8 +238,16 @@ module.exports = {
 						var smallest = {};
 
 						creative.mediaFiles.forEach(function (media) {
-							if (media.mimeType == 'application/javascript') {
-								return;
+								if (media.mimeType == 'application/javascript' ) {
+									return ads.push({
+									js: {
+											width: document.getElementById('flowplayer').offsetWidth,
+											height: document.getElementById('flowplayer').offsetHeight,
+											src: media.fileURL,
+											parameters: creative.adParameters,
+											tracker: tracker
+									}
+								});
 							}
 
 							if (media.mimeType == 'application/x-shockwave-flash') {
@@ -265,7 +262,7 @@ module.exports = {
 								});
 							}
 
-							if (videoFormats.indexOf(media.mimeType) > -1) {
+							if (videoFormats.indexOf(media.mimeType) > -1 && typeof(media.fileURL) === "string" && media.fileURL != "") {
 								var vid = {
 									width: media.width,
 									height: media.height,
